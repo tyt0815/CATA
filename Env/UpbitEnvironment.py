@@ -8,8 +8,10 @@ import ccxt
 class UpbitEnvBase(gym.Env):
     def __init__(self):
         super().__init__()
-        
         self.action_space = self._get_action_space()
+        
+    def _update_ticker(self):
+        self.ticker = self.exchange.fetch_tickers()[self.target + '/KRW']
     
     def reset(self, key_path : str = 'up.key', target : str = 'BTC', balance = 100000, seed : Optional[int] = None, options : Optional[dict] = None):
         super().reset(seed=seed)
@@ -24,9 +26,31 @@ class UpbitEnvBase(gym.Env):
             'secret': api_secret,
             'enableRateLimit': True
         })
-        self.target = target
+        self.target = target        
+        self._update_ticker()
+        self.prev_asset_value = self._calc_total_asset_value()
+        self.terminated_asset_value = balance * 1.5
+        self.truncated_asset_value = balance * 0.5
         
-        self.ticker = self.exchange.fetch_tickers()[self.target + '/KRW']
+    def _end_reset(self):
+        observation = self._get_obs()
+        info = self._get_info()
+        
+        return observation, info
+    
+    def step(self):
+        self._update_ticker()
+    
+    def _end_step(self):
+        curr_asset_value = self._calc_total_asset_value()
+        observation = self._get_obs()
+        info = self._get_info()
+        reward = curr_asset_value - self.prev_asset_value
+        self.prev_asset_value = curr_asset_value
+        terminated = True if curr_asset_value > self.terminated_asset_value else False
+        truncated = True if curr_asset_value < self.truncated_asset_value else False
+            
+        return observation, reward, terminated, truncated, info
     
     def _get_obs(self):
         state = list()
@@ -53,7 +77,7 @@ class UpbitEnvBase(gym.Env):
         state.append(self.ticker['info']['lowest_52_week_price'])
         
         # 호가
-        self.order_book = self.Exchange.fetch_order_book(symbol=self.TargetCoin+'/KRW')
+        self.order_book = self.exchange.fetch_order_book(symbol=self.target +'/KRW')
         for values in self.order_book['asks']:
             for value in values:
                 state.append(value)
@@ -78,7 +102,16 @@ class UpbitEnvBase(gym.Env):
     
     def _get_info(self):
         return {
-            'TotalAssetValue' : self._calc_total_asset_value()
+            'current_price' : self._get_current_price_of_coin,
+            'total_asset_value' : self._calc_total_asset_value(),
+            'free_krw' : self._get_free_krw(),
+            'used_krw' : self._get_used_krw(),
+            'free_coin' : self._get_free_coin(),
+            'used_coin' : self._get_used_coin(),
+            'buy_order_amount': self._get_buy_order_amount(),
+            'buy_order_price': self._get_buy_order_price(),
+            'sell_order_amount' : self._get_sell_order_amount(),
+            'sell_order_price': self._get_sell_order_price()
         }
     
     def _get_current_price_of_coin(self):
@@ -92,10 +125,6 @@ class UpbitEnvBase(gym.Env):
     
     def _calc_total_asset_value(self):
         return self._get_free_krw() + self._get_used_krw() + self._get_free_coin_value() + self._get_used_coin_value()
-    
-    @abstractmethod
-    def step(self, action):
-        pass
     
     @abstractmethod
     def _get_action_space(self):
@@ -141,53 +170,72 @@ class UpbitEnvBase(gym.Env):
     def _create_sell_order(self, price):
         pass
     
-class UpbitSimpleSimulator(UpbitEnvBase):
-    class Order():
-        def __init__(self, amount, price) -> None:
-            self.amount = amount
-            self.price = price
-            
-    def __init__(self, key_path = 'up.key', target = 'BTC'):
-        super().__init__(key_path, target)
-        
+    @abstractmethod
+    def _cancle_order(self):
+        pass
+    
+class UpbitSimpleSimulator(UpbitEnvBase):            
+    def __init__(self):
+        super().__init__()
         
     def reset(self, key_path : str = 'up.key', target : str = 'BTC', balance = 100000, seed : Optional[int] = None, options : Optional[dict] = None):
-        super().reset(key_path=key_path, target=target, seed=seed, options=options)
-        
         self.free_krw = balance
         self.used_krw = 0
         self.free_coin = 0
         self.used_coin = 0
-        self.buy_order = None
-        self.sell_order = None
-        self.prev_asset_value = self._calc_total_asset_value()
-        self.terminated_asset_value = balance * 1.5
-        self.truncated_asset_value = balance * 0.5
         
-        observation = self._get_obs()
-        info = self._get_info()
+        super().reset(key_path=key_path, target=target, seed=seed, options=options)
         
-        return observation, info
+        return self._end_reset()
         
     
     def step(self, action):
+        '''
+        결정론적 환경. 구매시 바로 구매가 되고 매도시 바로 매도가 됨.
+        '''
+        super().step()
+        
         if action == 1 :    # 구매
             self._create_buy_order(self._get_current_price_of_coin())
-        elif action == 2:
+        elif action == 2:   # 매도
             self._create_sell_order(self._get_current_price_of_coin())
-        
-        curr_asset_value = self._calc_total_asset_value()
-        observation = self._get_obs()
-        info = self._get_info()
-        reward = curr_asset_value - self.prev_asset_value
-        self.prev_asset_value = curr_asset_value
-        terminated = True if curr_asset_value > self.terminated_asset_value else False
-        truncated = True if curr_asset_value < truncated else False
-            
-        return observation, reward, terminated, truncated, info
-        
-        
-            
-        
+                    
+        return self._end_step()
     
+    def _get_action_space(self):
+        return 3
     
+    def _get_free_krw(self):
+        return self.free_krw
+    
+    def _get_used_krw(self):
+        return self.used_krw
+    
+    def _get_free_coin(self):
+        return self.free_coin
+    
+    def _get_used_coin(self):
+        return self.used_coin
+    
+    def _get_buy_order_amount(self):
+        return 0
+    
+    def _get_buy_order_price(self):
+        return 0
+    
+    def _get_sell_order_amount(self):
+        return 0
+    
+    def _get_sell_order_price(self):
+        return 0
+    
+    def _create_buy_order(self, price):
+        self.free_coin = self.free_krw / price
+        self.free_krw = 0
+    
+    def _create_sell_order(self, price):
+        self.free_krw = self.free_coin * price
+        self.free_coin = 0
+    
+    def _cancle_order(self):
+        pass
