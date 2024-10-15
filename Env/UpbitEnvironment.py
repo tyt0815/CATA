@@ -102,7 +102,7 @@ class UpbitEnvBase(gym.Env):
     
     def _get_info(self):
         return {
-            'current_price' : self._get_current_price_of_coin,
+            'current_price' : self._get_current_price_of_coin(),
             'total_asset_value' : self._calc_total_asset_value(),
             'free_krw' : self._get_free_krw(),
             'used_krw' : self._get_used_krw(),
