@@ -13,7 +13,15 @@ class UpbitEnvBase(gym.Env):
     def _update_ticker(self):
         self.ticker = self.exchange.fetch_tickers()[self.target + '/KRW']
     
-    def reset(self, key_path : str = 'up.key', target : str = 'BTC', balance = 100000, seed : Optional[int] = None, options : Optional[dict] = None):
+    def reset(
+            self,
+            key_path : str = 'up.key',
+            target : str = 'BTC',
+            balance = 100000.,
+            seed : Optional[int] = None,
+            options : Optional[dict] = None,
+            end_condition : float = 0.1
+        ):
         super().reset(seed=seed)
         
         with open(key_path) as f:
@@ -28,29 +36,12 @@ class UpbitEnvBase(gym.Env):
         })
         self.target = target        
         self._update_ticker()
-        self.prev_asset_value = self._calc_total_asset_value()
-        self.terminated_asset_value = balance * 1.5
-        self.truncated_asset_value = balance * 0.5
-        
-    def _end_reset(self):
-        observation = self._get_obs()
-        info = self._get_info()
-        
-        return observation, info
+        self._prev_asset_value = self._calc_total_asset_value()
+        self.terminated_asset_value = balance * (1 + end_condition)
+        self.truncated_asset_value = balance * (1 - end_condition)
     
     def step(self):
         self._update_ticker()
-    
-    def _end_step(self):
-        curr_asset_value = self._calc_total_asset_value()
-        observation = self._get_obs()
-        info = self._get_info()
-        reward = curr_asset_value - self.prev_asset_value
-        self.prev_asset_value = curr_asset_value
-        terminated = True if curr_asset_value > self.terminated_asset_value else False
-        truncated = True if curr_asset_value < self.truncated_asset_value else False
-            
-        return observation, reward, terminated, truncated, info
     
     def _get_obs(self):
         state = list()
@@ -91,6 +82,7 @@ class UpbitEnvBase(gym.Env):
         state.append(self._get_used_krw())
         state.append(self._get_free_coin())
         state.append(self._get_used_coin())
+        state.append(self._prev_asset_value)
         
         # 오더 정보
         state.append(self._get_buy_order_amount())
@@ -103,7 +95,8 @@ class UpbitEnvBase(gym.Env):
     def _get_info(self):
         return {
             'current_price' : self._get_current_price_of_coin(),
-            'total_asset_value' : self._calc_total_asset_value(),
+            'prev_asset_value' : self._prev_asset_value,
+            'curr_asset_value' : self._calc_total_asset_value(),
             'free_krw' : self._get_free_krw(),
             'used_krw' : self._get_used_krw(),
             'free_coin' : self._get_free_coin(),
@@ -178,15 +171,26 @@ class UpbitSimpleSimulator(UpbitEnvBase):
     def __init__(self):
         super().__init__()
         
-    def reset(self, key_path : str = 'up.key', target : str = 'BTC', balance = 100000, seed : Optional[int] = None, options : Optional[dict] = None):
-        self.free_krw = balance
-        self.used_krw = 0
-        self.free_coin = 0
-        self.used_coin = 0
+    def reset(
+            self,
+            key_path : str = 'up.key',
+            target : str = 'BTC',
+            balance = 100000.,
+            seed : Optional[int] = None,
+            options : Optional[dict] = None,
+            end_condition : float = 0.1
+            ):
+        self.free_krw : float = balance
+        self.used_krw : float = 0
+        self.free_coin : float = 0
+        self.used_coin : float = 0
         
-        super().reset(key_path=key_path, target=target, seed=seed, options=options)
+        super().reset(key_path, target, balance, seed, options, end_condition)
         
-        return self._end_reset()
+        observation = self._get_obs()
+        info = self._get_info()
+        
+        return observation, info
         
     
     def step(self, action):
@@ -195,15 +199,25 @@ class UpbitSimpleSimulator(UpbitEnvBase):
         '''
         super().step()
         
+        curr_asset_value = self._calc_total_asset_value()
+        reward = 0
         if action == 1 :    # 구매
             self._create_buy_order(self._get_current_price_of_coin())
         elif action == 2:   # 매도
             self._create_sell_order(self._get_current_price_of_coin())
-                    
-        return self._end_step()
+            
+            reward = (curr_asset_value - self._prev_asset_value) / self._prev_asset_value * 100
+            self._prev_asset_value = curr_asset_value
+        
+        observation = self._get_obs()
+        info = self._get_info()
+        terminated = True if curr_asset_value > self.terminated_asset_value else False
+        truncated = True if curr_asset_value < self.truncated_asset_value else False
+            
+        return observation, reward, terminated, truncated, info
     
     def _get_action_space(self):
-        return 3
+        return gym.spaces.Discrete(3)
     
     def _get_free_krw(self):
         return self.free_krw
@@ -230,12 +244,14 @@ class UpbitSimpleSimulator(UpbitEnvBase):
         return 0
     
     def _create_buy_order(self, price):
-        self.free_coin = self.free_krw / price
-        self.free_krw = 0
+        transaction_amount = self.free_krw / price
+        self.free_coin += transaction_amount
+        self.free_krw -= transaction_amount * price
     
     def _create_sell_order(self, price):
-        self.free_krw = self.free_coin * price
-        self.free_coin = 0
+        transaction_amount = self.free_coin * price
+        self.free_krw += transaction_amount
+        self.free_coin -= transaction_amount / price
     
     def _cancle_order(self):
         pass
