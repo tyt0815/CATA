@@ -64,6 +64,7 @@ def select_action(state):
 episode_durations = []
 def plot_durations(show_result = False):
     durations_t = torch.tensor(episode_durations, dtype=torch.float)
+    plt.clf()
     if show_result:
         plt.title('Result')
     else:
@@ -78,7 +79,6 @@ def plot_durations(show_result = False):
     #     plt.plot(means.numpy())
     plt.draw()
     plt.pause(0.5)
-    plt.clf()
         
 def optimize_model():
     if len(memory) < BATCH_SIZE:
@@ -158,7 +158,7 @@ if __name__ == '__main__':
     memory = ReplayMemory(10000)
 
     if torch.cuda.is_available():
-        num_episodes = 600
+        num_episodes = 300
         n_iter = BATCH_SIZE * 2
     else:
         num_episodes = 50
