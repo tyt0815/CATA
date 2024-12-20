@@ -1,6 +1,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+# TODO MLP 모델 다시 작성
+
 class MLP(nn.Module):
     
     def __init__(self, n_observations, n_actions):
